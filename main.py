@@ -291,8 +291,17 @@ def show_confirmation():
     print(ordered_products)
 
 def create_qty_buttons(frame, var):
-    def increase(): var.set(var.get() + 1)
-    def decrease(): var.set(max(0, var.get() - 1))
+    def increase():
+        # Set all other quantities to 0
+        for item in product_states:
+            if item["quantity"] != var:
+                item["quantity"].set(0)
+        # Set the selected item's quantity to 1
+        var.set(1)
+
+    def decrease():
+        var.set(0)
+
     minus_btn = ctk.CTkButton(frame, text="-", width=32, command=decrease)
     plus_btn = ctk.CTkButton(frame, text="+", width=32, command=increase)
     qty_lbl = ctk.CTkLabel(frame, textvariable=var, text_color="black")
