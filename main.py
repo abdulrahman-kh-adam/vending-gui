@@ -6,6 +6,16 @@ import time
 import random
 import requests
 from io import BytesIO
+import serial
+
+
+# Initialize serial connection if available
+try:
+    ser = serial.Serial('/dev/serial0', 9600, timeout=1)  # Adjust port as needed
+    print("Serial connection established.")
+except serial.SerialException as e:
+    ser = None
+    print(f"Serial connection failed: {e}")
 
 FontName = 'Segoe UI'
 FontSize = 20
@@ -89,7 +99,7 @@ def check_payment_status():
             payment_status = data.get('paymentStatus', 'Pending')
             
             if payment_status == 'Paid':
-                mark_order_done()
+                mark_payment_done()
             else:
                 root.after(1000, check_payment_status)
         else:
@@ -99,12 +109,37 @@ def check_payment_status():
         print(f"Exception while checking payment status: {str(e)}")
         root.after(1000, check_payment_status)
 
+def mark_payment_done():
+    global ordered_products
+    print("Payment confirmed. Sending product location to Arduino...")
+
+    if ser:
+        location = ordered_products[0] if ordered_products else "NA"
+        ser.write((location + '\n').encode())
+        wait_for_serial_done()
+    else:
+        show_payment_error("Serial connection not available")
+
+def wait_for_serial_done():
+    def check_serial():
+        if ser.in_waiting:
+            line = ser.readline().decode().strip()
+            print(f"Arduino replied: {line}")
+            if line.lower() == "done":
+                mark_order_done()
+            else:
+                root.after(500, check_serial)
+        else:
+            root.after(500, check_serial)
+    check_serial()
+
+
 def mark_order_done():
     global current_order_id
     try:
         response = requests.get(f"https://mctasuvendingmachine.vercel.app/api/orders/mark-as-done/{current_order_id}")
         if response.ok:
-            show_payment_success()
+            show_payment_success()  # triggers notification + restart after 3 sec
         else:
             print(f"Error marking order as done: {response.status_code} - {response.text}")
             show_payment_error("Failed to complete order")
