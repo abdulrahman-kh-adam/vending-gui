@@ -113,12 +113,15 @@ def mark_payment_done():
     global ordered_products
     print("Payment confirmed. Sending product location to Arduino...")
 
+    show_notification("✅ Payment accepted! Your order is being prepared...", color="#4CAF50", duration=3000)
+
     if ser:
         location = ordered_products[0] if ordered_products else "NA"
         ser.write((location + '\n').encode())
         wait_for_serial_done()
     else:
         show_payment_error("Serial connection not available")
+
 
 def wait_for_serial_done():
     def check_serial():
