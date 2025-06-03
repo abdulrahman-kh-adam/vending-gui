@@ -1,3 +1,16 @@
+'''
+CONNECTIONS BETWEEN PI AND ARDUINO
+Pi <---> Ard
+pin8  <---> pin0
+pin10 <---> pin1
+pin6  <---> GND
+
+Note!
+Arduino uses 5V logic and PI uses 3.3V Logic. Please consider using a logic
+level shifter or a voltage divider to protect the Pi RX's pin
+'''
+
+
 import tkinter as tk
 import customtkinter as ctk
 from PIL import Image, ImageTk
@@ -6,16 +19,6 @@ import time
 import random
 import requests
 from io import BytesIO
-import serial
-
-
-# Initialize serial connection if available
-try:
-    ser = serial.Serial('/dev/serial0', 9600, timeout=1)  # Adjust port as needed
-    print("Serial connection established.")
-except serial.SerialException as e:
-    ser = None
-    print(f"Serial connection failed: {e}")
 
 FontName = 'Segoe UI'
 FontSize = 20
@@ -31,13 +34,44 @@ current_order_id = None  # To store the order ID for payment
 payment_check_active = False  # To control the payment status checking loop
 
 # --- Fetch product data ONCE at startup ---
-try:
-    api_response = requests.get("https://mctasuvendingmachine.vercel.app/api/products")
-    api_response.raise_for_status()
-    products_data = [p for p in api_response.json()['data']['products'] if p['quantity'] > 0]
-except Exception as e:
-    products_data = []
-    print(f"Error loading products: {e}")
+products_data = []
+
+def fetch_products():
+    global products_data
+    show_notification("Loading products...", color="#FFA500", duration=10000)
+    try:
+        api_response = requests.get("https://mctasuvendingmachine.vercel.app/api/products")
+        api_response.raise_for_status()
+        products_data = [p for p in api_response.json()['data']['products'] if p['quantity'] > 0]
+    except Exception as e:
+        products_data = []
+        print(f"Error loading products: {e}")
+    hide_notification()
+    root.after(0, populate_menu)
+
+def populate_menu():
+    for product in products_data:
+        frame = ctk.CTkFrame(MenuPage, fg_color="#EFEFEF")
+        frame.pack(pady=5, padx=10, fill='x')
+        try:
+            image_data = requests.get(product["imageUrl"]).content
+            image = Image.open(BytesIO(image_data)).resize((50, 50))
+        except:
+            image = Image.new("RGB", (50, 50), color="gray")
+        product_img = ctk.CTkImage(light_image=image, size=(50, 50))
+        img_label = ctk.CTkLabel(frame, image=product_img, text="")
+        img_label.image = product_img
+        img_label.pack(side="left", padx=10)
+        info = ctk.CTkLabel(frame, text=f'{product["name"]} - {product["price"]} LE', font=(FontName, 16), text_color="black")
+        info.pack(side="left", padx=10)
+        quantity_var = tk.IntVar(value=0)
+        qty_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        qty_frame.pack(side="right", padx=10)
+        create_qty_buttons(qty_frame, quantity_var)
+        product_states.append({"data": product, "quantity": quantity_var})
+
+
+
 
 # --- Core Functions ---
 
@@ -99,7 +133,7 @@ def check_payment_status():
             payment_status = data.get('paymentStatus', 'Pending')
             
             if payment_status == 'Paid':
-                mark_payment_done()
+                mark_order_done()
             else:
                 root.after(1000, check_payment_status)
         else:
@@ -109,40 +143,12 @@ def check_payment_status():
         print(f"Exception while checking payment status: {str(e)}")
         root.after(1000, check_payment_status)
 
-def mark_payment_done():
-    global ordered_products
-    print("Payment confirmed. Sending product location to Arduino...")
-
-    show_notification("✅ Payment accepted! Your order is being prepared...", color="#4CAF50", duration=3000)
-
-    if ser:
-        location = ordered_products[0] if ordered_products else "NA"
-        ser.write((location + '\n').encode())
-        wait_for_serial_done()
-    else:
-        show_payment_error("Serial connection not available")
-
-
-def wait_for_serial_done():
-    def check_serial():
-        if ser.in_waiting:
-            line = ser.readline().decode().strip()
-            print(f"Arduino replied: {line}")
-            if line.lower() == "done":
-                mark_order_done()
-            else:
-                root.after(500, check_serial)
-        else:
-            root.after(500, check_serial)
-    check_serial()
-
-
 def mark_order_done():
     global current_order_id
     try:
         response = requests.get(f"https://mctasuvendingmachine.vercel.app/api/orders/mark-as-done/{current_order_id}")
         if response.ok:
-            show_payment_success()  # triggers notification + restart after 3 sec
+            show_payment_success()
         else:
             print(f"Error marking order as done: {response.status_code} - {response.text}")
             show_payment_error("Failed to complete order")
@@ -170,7 +176,6 @@ def show_payment_error(message):
     payment_check_active = False
     show_notification(message, color="#F44336", duration=3000)
     root.after(3000, Restart)
-
 def create_order():
     global current_order_id
     products = []
@@ -185,21 +190,30 @@ def create_order():
     if not products:
         Restart()
         return
+
     payload = {
         "products": products,
         "totalPrice": total
     }
-    try:
-        response = requests.post("https://mctasuvendingmachine.vercel.app/api/orders", json=payload)
-        if response.ok:
-            current_order_id = response.json().get('data', {}).get('order', {}).get('_id')
-            moveToNextPage()
-        else:
-            show_notification("Order failed. Returning to home.", color="#F44336", duration=2000)
+
+    def order_thread():
+        show_notification("Placing your order...", color="#FFA500", duration=10000)
+        try:
+            response = requests.post("https://mctasuvendingmachine.vercel.app/api/orders", json=payload)
+            hide_notification()
+            if response.ok:
+                current_order_id = response.json().get('data', {}).get('order', {}).get('_id')
+                root.after(0, moveToNextPage)
+            else:
+                show_notification("Order failed. Returning to home.", color="#F44336", duration=2000)
+                root.after(2000, Restart)
+        except Exception as e:
+            hide_notification()
+            show_notification(f"Error: {str(e)}", color="#F44336", duration=2000)
             root.after(2000, Restart)
-    except Exception as e:
-        show_notification(f"Error: {str(e)}", color="#F44336", duration=2000)
-        root.after(2000, Restart)
+
+    threading.Thread(target=order_thread).start()
+
 
 def moveToNextPage():
     global Count1, payment_check_active
@@ -223,7 +237,7 @@ def create_payment_request():
         print("Error: No order ID available for payment")
         show_payment_error("No order ID available")
         return
-    # Get the products and total from product_states
+
     products = []
     total = 0
     for item in product_states:
@@ -236,23 +250,32 @@ def create_payment_request():
             }
             total += item["data"]["price"] * qty
             products.append(product)
+
     payload = {
         "products": products,
         "total": total,
         "orderId": current_order_id
     }
-    try:
-        response = requests.post("https://mctasuvendingmachine.vercel.app/api/payments/create-payment", json=payload)
-        if response.ok:
-            qr_url = response.json().get('data', {}).get('qr_url')
-            if qr_url:
-                display_qr_from_url(qr_url)
+
+    def payment_thread():
+        show_notification("Generating QR Code...", color="#FFA500", duration=10000)
+        try:
+            response = requests.post("https://mctasuvendingmachine.vercel.app/api/payments/create-payment", json=payload)
+            hide_notification()
+            if response.ok:
+                qr_url = response.json().get('data', {}).get('qr_url')
+                if qr_url:
+                    display_qr_from_url(qr_url)
+                else:
+                    show_payment_error("Payment service unavailable")
             else:
-                show_payment_error("Payment service unavailable")
-        else:
-            show_payment_error("Payment service error")
-    except Exception as e:
-        show_payment_error("Payment service unavailable")
+                show_payment_error("Payment service error")
+        except Exception as e:
+            hide_notification()
+            show_payment_error("Payment service unavailable")
+
+    threading.Thread(target=payment_thread).start()
+
 
 def display_qr_from_url(url):
     try:
@@ -477,5 +500,8 @@ Cancle_btn2 = ctk.CTkButton(
 )
 Cancle_btn2.pack(side=ctk.LEFT, padx=20, pady=10)
 ConfirmNaviationFrame.pack(side=ctk.BOTTOM, pady=10, padx=10)
+
+# Start product fetching thread
+threading.Thread(target=fetch_products).start()
 
 root.mainloop()
